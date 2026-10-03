@@ -1,0 +1,14 @@
+# GPU 版运行时依赖(Python 3.12+,CUDA 12.1)
+# torch/torchaudio 从 PyTorch 官方 CUDA 源安装
+--index-url https://download.pytorch.org/whl/cu121
+torch>=2.3
+torchaudio>=2.3
+# 其余依赖回到 PyPI
+--index-url https://pypi.org/simple
+onnxruntime-gpu>=1.17
+numpy>=1.26
+opencv-python>=4.8
+typeguard>=2.13,<3
+pyyaml>=6.0
+tqdm>=4.66
+imageio-ffmpeg>=0.4

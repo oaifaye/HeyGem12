@@ -1,0 +1,10 @@
+# CPU 版运行时依赖(Python 3.12+)
+torch>=2.3
+torchaudio>=2.3
+numpy>=1.26
+opencv-python>=4.8
+onnxruntime>=1.17
+typeguard>=2.13,<3
+pyyaml>=6.0
+tqdm>=4.66
+imageio-ffmpeg>=0.4
