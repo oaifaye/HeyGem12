@@ -179,3 +179,7 @@ heygem12/
 ├── checkpoints/       model weights (~890MB after download)
 └── assets/            demo videos and driving audio
 ```
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/chart?repos=oaifaye/heygem12&type=date&legend=top-left)](https://www.star-history.com/?repos=oaifaye%2Fheygem12&type=date&legend=top-left)
