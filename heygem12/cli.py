@@ -20,32 +20,25 @@ def main():
     parser.add_argument("--restore", action="store_true",
                         help="enable chaofen_after (GFPGAN on the DINet render; the original "
                              "does NOT do this -- its restoration only feeds the input crop)")
-    parser.add_argument("--no-pre-restore", action="store_true",
-                        help="disable chaofen_before (GFPGAN-sharpening the source crop "
-                             "before feeding DINet)")
-    parser.add_argument("--fuse-mode", default="oval", choices=("oval", "fuse_mask"),
-                        help='oval = original-style face-oval hard paste (default); '
-                             'fuse_mask = old feathered fuse_mask+mouth-ellipse blend')
-    parser.add_argument("--no-kps-stabilize", action="store_true",
-                        help="disable temporal stabilization of the per-frame 5-point "
-                             "keypoints (default on: kills 1-frame detect jitter that "
-                             "shows up as face/mouth flicker)")
-    parser.add_argument("--render-ema", type=float, default=0.0,
-                        help="EXPERIMENTAL temporal EMA on the DINet render (0..1; default 0 = "
-                             "off). Temporal blending ghosts lip shapes during speech because "
-                             "the decoder repaints the whole masked region at phoneme "
-                             "boundaries -- left at 0 (the original does no temporal render "
-                             "processing either)")
+    parser.add_argument("--pre-restore", action="store_true",
+                        help="enable chaofen_before (GFPGAN-restore the frame before cropping; "
+                             "the original gates this on a blur/quality check and mostly leaves "
+                             "it OFF for sharp sources -- default off, see HANDOFF)")
     args = parser.parse_args()
+
+    # Match the original's numeric environment: no TF32 matmul scatter.
+    try:
+        import torch
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+    except Exception:
+        pass
 
     from heygem12.pipeline import LipSyncPipeline
 
     pipeline = LipSyncPipeline(args.checkpoints, device=args.device,
                                restore=args.restore,
-                               restore_source=not args.no_pre_restore,
-                               fuse_mode=args.fuse_mode,
-                               kps_stabilize=not args.no_kps_stabilize,
-                               render_ema=args.render_ema)
+                               restore_source=args.pre_restore)
     out = pipeline.run(args.video, args.audio, args.output, max_frames=args.max_frames)
     print(f"[heygem12] done: {out}")
 

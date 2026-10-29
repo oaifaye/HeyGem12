@@ -1,4 +1,4 @@
-# HeyGem12
+﻿# HeyGem12
 
 **[English](README.md) | 简体中文**
 
@@ -37,16 +37,21 @@ Python 3.8 绑定,可直接运行在现代 Python(3.12+)上。
 
 ## 原理
 
+整条推理链完全复刻原版 HeyGem 的逻辑（通过 Ghidra 反编译原版 `.so` 并用
+运行时 trace/hook 逐一实证每个常数后重写；运行时不依赖任何 `.so`）：
+
 ```
 音频 wav ──dB-mel──▶ WeNet conformer encoder(256 维, 25fps)
-视频 mp4 ──逐帧──▶ YuNet 人脸检测 ──▶ PFLD-98 关键点 ──五点语义标定──▶ 256×256 对齐 crop
-                        │
-        GFPGAN 复原源帧取 crop(chaofen_before;眼/颈部保留原图画质)
-                        │
-        DINetV1: 遮罩 crop + 同帧未遮罩参考图 + 音频窗(T=20)
+视频 mp4 ──逐帧──▶ SCRFD 检测 ──▶ bbox 左右/下方 +10% 裁剪
+                        ──resize 112──▶ PFLD-98 ──convert98to68──▶ 68 点 landmark
+                        ▶ boundingRect: x1=xc−0.75w, y1=y−0.15w, side=1.5w(轴对齐,无旋转)
+                        ▶ 时域平滑:居中 conv5 滑动平均 + 12px 去抖(非因果,全片)
+                        ▶ 矩形 crop ──resize 266×266 INTER_CUBIC──▶ DINet 输入 = crop[5:-5](256×256)
+                        ▶ (可选)GFPGAN 超分:mtcnn_512 norm_crop + 静态椭圆 mask
+                        ▶ DINetV1: 遮罩 crop + 同帧未遮罩参考图 + 音频窗(T=20)
                  ──▶ 嘴部 inpainting + AdaAT 外观变形
-                        │
-        脸椭圆掩码硬贴回源帧(增益匹配 + 边界/下缘渐隐)──▶ 输出 mp4(+驱动音频)
+                        ▶ 贴回:266 画布 resize 回矩形,经逐帧 landmark mask 融合——
+                          convexHull(下颌[2:15]+鼻尖) + 下半椭圆 + dilate 6×6 ──▶ 输出 mp4(+驱动音频)
 ```
 
 要点:
@@ -55,13 +60,29 @@ Python 3.8 绑定,可直接运行在现代 Python(3.12+)上。
   encoder 输出 256 维特征(25 fps);视频帧 `i` 的音频窗按视频帧率与音频
   时长对齐——视频较短时逐帧滑动取窗,视频较长时把可用特征跨度线性
   重采样到输出长度(25/30/60 fps 均已适配)。
-- 关键点链:YuNet 检测 → PFLD-98 关键点 → 逐视频语义标定(眼距比 +
-  鼻嘴垂直比,消除不同人脸的关键点语义漂移)→ 时序稳定(双帧尖刺
-  插值 + median-3 + 硬切换 EMA + 尺度锚定),静止段抖动压至亚像素、
-  大动作零滞后跟随。
-- 合成:canonical 脸椭圆掩码(crop 空间固定)硬贴回源帧,贴前做增益
-  匹配消除渲染的亮度偏移,掩码边界与颈部做渐隐,输出无痕接缝;
-  眼、颈部在复原阶段保留原图画质。
+- landmark 链(精确复刻):SCRFD bbox → 裁剪 `[x1−0.1w, y1, x2+0.1w, y2+0.1h]`
+  → 各向异性 resize 112 → PFLD-98 → 原版的 `convert98to68` 索引映射
+  (眼部点为两点均值)→ 68 点。裁剪矩形由 `boundingRect(landmarks68)` 按
+  原版公式(x1=xc−0.75w, y1=y−0.15w, side=1.5w)计算,并按原版的居中
+  窗口 5 卷积 + >12px 直通去抖做时域平滑。
+- 合成:逐帧贴回 mask 与原版 `get_face_mask` 一致(IoU≈0.99):下颌(去太阳穴
+  端点)+鼻尖的凸包,加下颌几何驱动的下半椭圆,dilate 6×6;mask 随 266 画布
+  resize 回矩形贴入,非脸区域像素与输入帧逐位一致。
+
+## 相比上一版(YuNet/Align256 时代)的优化
+
+- **检测**:YuNet → SCRFD(与原版相同的 insightface 语义)。
+- **裁剪几何**:自研五点仿射 warp(TEMPLATE_K,带旋转)→ 原版 68 点
+  landmark 驱动的轴对齐矩形裁剪 + 原版非因果时域平滑;消除旋转抖动和
+  逐人脸的模板失配(脸忽胖忽瘦)。
+- **关键点**:PFLD-98 五点 → 从原版二进制实证解出的 `convert98to68` 精确
+  映射(误差为 0)。
+- **贴回 mask**:固定脸椭圆 → 原版逐帧 landmark mask(下颌凸包+下半椭圆
+  +dilate),消除可见的椭圆接缝与"双下巴"伪影。
+- **人脸复原**:新增原版 GFPGAN 超分(chaofen)链:mtcnn_512 norm_crop →
+  GFPGAN → 反向矩阵贴回(静态椭圆 common_face_mask),与 cv2box 语义完全一致。
+- **验证方式**:全部几何常数均来自原版二进制的证据(Ghidra 反编译 +
+  cv2/运行时 hook),不再依赖逐视频 SIFT 拟合或手工调参。
 
 ## 安装
 
@@ -91,9 +112,9 @@ ONNX 运行时(GFPGAN/SCRFD/PFLD)自动优先 CUDA、失败回退 CPU,无需手�
 | [dinet_v1_20240131.pth](https://github.com/Holasyb918/HeyGem-Linux-Python-Hack/releases/download/ckpts_and_onnx/dinet_v1_20240131.pth) | 374MB | ★对口型核心网络 DINetV1:遮罩 crop + 同帧参考图 + 音频窗 → 新嘴型渲染 |
 | [wenetmodel.pt](https://github.com/Holasyb918/HeyGem-Linux-Python-Hack/releases/download/ckpts_and_onnx/wenetmodel.pt) | 182MB | 语音特征:conformer encoder,wav → 256 维声学特征(25fps) |
 | [GFPGANv1.4.onnx](https://github.com/Holasyb918/HeyGem-Linux-Python-Hack/releases/download/ckpts_and_onnx/GFPGANv1.4.onnx) | 325MB | 人脸复原:源帧人脸超分,为 DINet 提供锐利输入(眼/颈部保留原图) |
-| [pfpld_robust_sim_bs1_8003.onnx](https://github.com/Holasyb918/HeyGem-Linux-Python-Hack/releases/download/ckpts_and_onnx/pfpld_robust_sim_bs1_8003.onnx) | 6.6MB | 人脸关键点:PFLD-98 点归约为五点,用于 256×256 对齐 crop |
-| [scrfd_500m_bnkps_shape640x640.onnx](https://github.com/Holasyb918/HeyGem-Linux-Python-Hack/releases/download/ckpts_and_onnx/scrfd_500m_bnkps_shape640x640.onnx) | 2.4MB | 语义标定基准:逐视频校正 PFLD 五点的几何偏移(防脸型失真) |
-| [face_detection_yunet_2023mar.onnx](https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx) | 0.2MB | 人脸检测:定位脸框与粗略五点(对齐链入口;来源为 OpenCV Zoo) |
+| [pfpld_robust_sim_bs1_8003.onnx](https://github.com/Holasyb918/HeyGem-Linux-Python-Hack/releases/download/ckpts_and_onnx/pfpld_robust_sim_bs1_8003.onnx) | 6.6MB | 人脸关键点:PFLD-98 点,经原版 convert98to68 转成 68 点,驱动裁剪矩形与贴回 mask |
+| [scrfd_500m_bnkps_shape640x640.onnx](https://github.com/Holasyb918/HeyGem-Linux-Python-Hack/releases/download/ckpts_and_onnx/scrfd_500m_bnkps_shape640x640.onnx) | 2.4MB | 人脸检测:逐帧脸框与五点(与原版同模型、同 insightface 语义) |
+| [face_detection_yunet_2023mar.onnx](https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx) | 0.2MB | (旧版遗留备用,默认 SCRFD 链不再使用) |
 
 共 ~890MB,放入 `checkpoints/` 目录即可。前 5 个来自
 [HeyGem-Linux-Python-Hack](https://github.com/Holasyb918/HeyGem-Linux-Python-Hack)
@@ -151,7 +172,7 @@ heygem12/
 ├── heygem12/
 │   ├── models/        DINetV1 网络(反向工程重实现)
 │   ├── audio/         WeNet 特征前端(vendored wenet transformer)
-│   ├── face/          YuNet 检测 / PFLD-98 关键点 / SCRFD / 对齐与合成掩码
+│   ├── face/          SCRFD 检测 / PFLD-98 关键点 / convert98to68 与裁剪、mask 几何
 │   ├── third_party/   wenet transformer 代码(Apache-2.0)
 │   ├── pipeline.py    端到端管线
 │   └── cli.py         命令行入口

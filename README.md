@@ -43,19 +43,23 @@ Driving audio: [man_cn.wav](assets/man_cn.wav) / [woman_cn.wav](assets/woman_cn.
 
 ## How it works
 
+The pipeline faithfully replicates the original HeyGem inference logic
+(recovered by decompiling the original `.so` modules with Ghidra and verifying
+every constant against runtime traces/hooks — no `.so` is used at runtime):
+
 ```
 audio wav ──dB-mel──▶ WeNet conformer encoder (256-d, 25fps)
-video mp4 ──per frame──▶ YuNet face detection ──▶ PFLD-98 landmarks
-                              ──5-point semantic calibration──▶ 256×256 aligned crop
-                        │
-        GFPGAN restore of the source frame for the crop
-        (eyes/neck keep the raw pixels)
-                        │
-        DINetV1: masked crop + same-frame unmasked reference + audio window (T=20)
+video mp4 ──per frame──▶ SCRFD detection ──▶ crop bbox +10% sides/bottom
+                              ──resize 112──▶ PFLD-98 ──convert98to68──▶ 68-pt landmarks
+                        ▶ boundingRect: x1=xc-0.75w, y1=y-0.15w, side=1.5w (axis-aligned, no rotation)
+                        ▶ temporal smoothing: centered conv-5 moving average + 12px de-spike
+                        ▶ rect crop ──resize 266×266 INTER_CUBIC──▶ DINet input = crop[5:-5] (256×256)
+                        ▶ (optional) GFPGAN restore via mtcnn_512 norm_crop + static ellipse mask
+                        ▶ DINetV1: masked crop + same-frame unmasked reference + audio window (T=20)
                  ──▶ mouth inpainting + AdaAT appearance deformation
-                        │
-        paste back through a canonical face-oval mask
-        (gain match + feathered border/neck) ──▶ output mp4 (+ driving audio)
+                        ▶ paste back: 266 canvas resized to the rect, blended through the
+                          landmark mask = convexHull(jaw[2:15]+nose tip) + bottom half-ellipse
+                          + dilate 6×6 (per-frame, landmark-driven) ──▶ output mp4 (+ audio)
 ```
 
 Key points:
@@ -65,15 +69,36 @@ Key points:
   takes an audio window aligned to the video fps and audio duration — sliding
   per frame for short videos; for long videos the usable feature span is
   linearly resampled to the output length (25/30/60 fps all supported).
-- **Keypoint chain**: YuNet detection → PFLD-98 landmarks → per-video semantic
-  calibration (eye-distance ratio + nose/mouth vertical ratio, absorbing the
-  landmark semantic drift across faces) → temporal stabilization (2-frame spike
-  interpolation + median-3 + hard-switch EMA + scale anchoring): sub-pixel
-  jitter when still, zero-lag tracking on large head motion.
-- **Compositing**: a canonical face-oval mask (fixed in crop space) is pasted
-  back into the source frame with a gain match to cancel the render's brightness
-  offset, and feathered edges at the border and neck for a seam-free result;
-  eyes and neck keep the raw image quality from the restoration stage.
+- **Landmark chain (exact replica)**: SCRFD bbox → crop `[x1−0.1w, y1, x2+0.1w,
+  y2+0.1h]` → anisotropic resize 112 → PFLD-98 → the original's `convert98to68`
+  index mapping (eye points are 2-point means) → 68 landmarks. The crop rect
+  comes from `boundingRect(landmarks68)` with the original formula
+  (x1=xc−0.75w, y1=y−0.15w, side=1.5w), temporally smoothed with the original's
+  centered window-5 convolution + >12px pass-through de-spike.
+- **Compositing**: per-frame paste mask identical to the original's
+  `get_face_mask` (IoU≈0.99): convex hull of the jaw (temples trimmed) + nose
+  tip, plus a jaw-geometry-driven bottom half-ellipse, dilated 6×6; the mask is
+  resized with the 266 canvas back into the rect, so non-face pixels stay
+  bit-identical to the input frame.
+
+## What's new vs. the previous version (YuNet/Align256 era)
+
+- **Detection**: YuNet → SCRFD (same insightface semantics as the original).
+- **Crop geometry**: self-designed 5-point affine warp (TEMPLATE_K, rotated)
+  → the original's axis-aligned rect crop from 68-pt landmarks, with the
+  original's non-causal temporal smoothing; removes rotation jitter and the
+  per-face template misfits (fat/thin face).
+- **Landmarks**: PFLD-98 five points → exact `convert98to68` mapping recovered
+  from the original binary (runtime-verified, error 0.0).
+- **Paste mask**: fixed face-oval → the original's per-frame landmark mask
+  (jaw hull + bottom ellipse + dilate), eliminating the visible oval seam and
+  the double-chin artifact.
+- **Face restore**: added the original's GFPGAN "chaofen" chain (mtcnn_512
+  norm_crop → GFPGAN → reverse-matrix paste with the static ellipse
+  `common_face_mask`), replicating cv2box semantics exactly.
+- **Verification**: all geometry constants are now backed by evidence from the
+  original binaries (Ghidra decompilation + cv2/runtime hooks), not by
+  per-video SIFT fitting or hand tuning.
 
 ## Installation
 
@@ -107,9 +132,9 @@ the full set from **Baidu Netdisk** (extraction code `mgas`):
 | [dinet_v1_20240131.pth](https://github.com/Holasyb918/HeyGem-Linux-Python-Hack/releases/download/ckpts_and_onnx/dinet_v1_20240131.pth) | 374MB | ★ Core lip-sync network DINetV1: masked crop + same-frame reference + audio window → re-rendered mouth |
 | [wenetmodel.pt](https://github.com/Holasyb918/HeyGem-Linux-Python-Hack/releases/download/ckpts_and_onnx/wenetmodel.pt) | 182MB | Speech features: conformer encoder, wav → 256-d acoustic features (25fps) |
 | [GFPGANv1.4.onnx](https://github.com/Holasyb918/HeyGem-Linux-Python-Hack/releases/download/ckpts_and_onnx/GFPGANv1.4.onnx) | 325MB | Face restoration: super-resolves the source face as DINet's sharp input (eyes/neck kept raw) |
-| [pfpld_robust_sim_bs1_8003.onnx](https://github.com/Holasyb918/HeyGem-Linux-Python-Hack/releases/download/ckpts_and_onnx/pfpld_robust_sim_bs1_8003.onnx) | 6.6MB | Facial landmarks: PFLD-98 points reduced to five, used for the 256×256 aligned crop |
-| [scrfd_500m_bnkps_shape640x640.onnx](https://github.com/Holasyb918/HeyGem-Linux-Python-Hack/releases/download/ckpts_and_onnx/scrfd_500m_bnkps_shape640x640.onnx) | 2.4MB | Semantic calibration reference: corrects per-video geometric offset of the PFLD five points (prevents face-shape distortion) |
-| [face_detection_yunet_2023mar.onnx](https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx) | 0.2MB | Face detection: locates the face box and rough five points (entry of the alignment chain; from OpenCV Zoo) |
+| [pfpld_robust_sim_bs1_8003.onnx](https://github.com/Holasyb918/HeyGem-Linux-Python-Hack/releases/download/ckpts_and_onnx/pfpld_robust_sim_bs1_8003.onnx) | 6.6MB | Facial landmarks: PFLD-98 points, converted to the original's 68-pt set that drives the crop rect and the paste mask |
+| [scrfd_500m_bnkps_shape640x640.onnx](https://github.com/Holasyb918/HeyGem-Linux-Python-Hack/releases/download/ckpts_and_onnx/scrfd_500m_bnkps_shape640x640.onnx) | 2.4MB | Face detection: per-frame face box + five points (same model and insightface semantics as the original) |
+| [face_detection_yunet_2023mar.onnx](https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx) | 0.2MB | (legacy fallback, unused by the default SCRFD chain) |
 
 ~890MB in total; drop them into `checkpoints/`. The first five come from the
 `ckpts_and_onnx` release of
@@ -171,7 +196,7 @@ heygem12/
 ├── heygem12/
 │   ├── models/        DINetV1 network (reverse-engineered reimplementation)
 │   ├── audio/         WeNet feature frontend (vendored wenet transformer)
-│   ├── face/          YuNet detection / PFLD-98 landmarks / SCRFD / alignment & paste masks
+│   ├── face/          SCRFD detection / PFLD-98 landmarks / convert98to68 & crop/mask geometry
 │   ├── third_party/   wenet transformer code (Apache-2.0)
 │   ├── pipeline.py    end-to-end pipeline
 │   └── cli.py         command-line entry

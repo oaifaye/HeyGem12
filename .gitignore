@@ -1,0 +1,6 @@
+dev/
+.venv/
+.idea/
+__pycache__/
+checkpoints/*
+!checkpoints/README.md
