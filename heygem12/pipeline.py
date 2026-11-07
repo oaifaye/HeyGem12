@@ -137,6 +137,7 @@ class LipSyncPipeline:
         fuse_mode: str = "original",  # CLI compat; only the original scheme remains
         kps_stabilize: bool = False,  # CLI compat; ignored
         render_ema: float = 0.0,      # CLI compat; ignored
+        audio_device: Optional[str] = None,  # WeNet device; None follows device
     ):
         self.device = device
         # crop geometry: "orig" replicates the original HeyGem chain
@@ -161,7 +162,7 @@ class LipSyncPipeline:
 
         print("[heygem12] loading WeNet frontend ...")
         self.audio_frontend = WeNetFeatureExtractor(
-            os.path.join(checkpoints_dir, "wenetmodel.pt"), device=device)
+            os.path.join(checkpoints_dir, "wenetmodel.pt"), device=audio_device or device)
 
         from heygem12.face.landmarks import PFLDLandmarker
         self.pfld = PFLDLandmarker(

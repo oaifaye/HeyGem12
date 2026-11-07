@@ -1,0 +1,5 @@
+# API server dependencies (on top of the runtime requirements).
+# ffmpeg and ffprobe must be on PATH (or set HEYGEM12_API_FFMPEG / HEYGEM12_API_FFPROBE).
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9

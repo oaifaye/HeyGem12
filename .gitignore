@@ -4,3 +4,4 @@ dev/
 __pycache__/
 checkpoints/*
 !checkpoints/README.md
+data/
