@@ -131,6 +131,8 @@ class WeNetFeatureExtractor:
         if missing:
             raise RuntimeError(f"missing keys when loading wenet encoder: {missing[:5]}")
         model.to(device).eval()
+        from ..rocm_compat import patch_batchnorm
+        patch_batchnorm(model, device)
         self.model = model
         self._mel_basis = None
         self.skipped_keys = skipped

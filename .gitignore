@@ -1,5 +1,6 @@
 dev/
 .venv/
+.venv*/
 .idea/
 __pycache__/
 checkpoints/*

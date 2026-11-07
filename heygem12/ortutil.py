@@ -1,6 +1,7 @@
-"""ONNX Runtime session creation with automatic CUDA preference.
+"""ONNX Runtime session creation with automatic GPU preference.
 
-If ``onnxruntime-gpu`` is installed and CUDA init works, sessions run on GPU;
+If ``onnxruntime-gpu`` is installed and CUDA init works, sessions run on CUDA;
+with ``onnxruntime-directml`` (AMD/Intel GPUs on Windows) they run on DirectML;
 otherwise they transparently fall back to CPU.
 """
 import ctypes
@@ -40,11 +41,22 @@ def ort_providers(session: ort.InferenceSession) -> List[str]:
 
 
 def make_session(model_path: str) -> ort.InferenceSession:
-    """Create an InferenceSession, preferring CUDAExecutionProvider."""
+    """Create an InferenceSession, preferring CUDA, then DirectML, then CPU.
+
+    HEYGEM12_ORT=cpu keeps ONNX models off the GPU; auto keeps the preference order.
+    """
+    if os.environ.get("HEYGEM12_ORT", "auto") == "cpu":
+        return ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
     candidates = (["CUDAExecutionProvider", "CPUExecutionProvider"],
+                  ["DmlExecutionProvider", "CPUExecutionProvider"],
                   ["CPUExecutionProvider"])
+    # ORT silently falls back to CPU for unavailable providers instead of
+    # raising, so only try providers this build actually ships.
+    available = set(ort.get_available_providers())
     last_err: Exception | None = None
     for providers in candidates:
+        if providers[0] not in available:
+            continue
         try:
             if providers[0] == "CUDAExecutionProvider":
                 _preload_nvidia_libs()
@@ -56,7 +68,14 @@ def make_session(model_path: str) -> ort.InferenceSession:
                 opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_BASIC
                 return ort.InferenceSession(model_path, sess_options=opts,
                                             providers=providers)
+            if providers[0] == "DmlExecutionProvider":
+                # DML EP requires memory patterns off and sequential execution.
+                opts = ort.SessionOptions()
+                opts.enable_mem_pattern = False
+                opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+                return ort.InferenceSession(model_path, sess_options=opts,
+                                            providers=providers)
             return ort.InferenceSession(model_path, providers=providers)
-        except Exception as e:  # CUDA provider present but broken -> fall back
+        except Exception as e:  # GPU provider present but broken -> fall back
             last_err = e
     raise last_err  # pragma: no cover

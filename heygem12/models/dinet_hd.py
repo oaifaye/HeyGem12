@@ -185,4 +185,6 @@ def load_dinet_hd(checkpoint_path: str, device: str = "cpu") -> DINetHD:
     model = DINetHD()
     model.load_state_dict(state_dict, strict=True)
     model.to(device).eval()
+    from ..rocm_compat import patch_batchnorm
+    patch_batchnorm(model, device)
     return model
